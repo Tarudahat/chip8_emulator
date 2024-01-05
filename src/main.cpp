@@ -60,14 +60,21 @@ public:
     }
 };
 
-void update_display(bool display_arr[64 * 32])
+void update_display(bool display_arr[64][32])
 {
 
     for (size_t i = 0; i < 32; i++)
     {
         for (size_t i2 = 0; i2 < 64; i2++)
         {
-            cout << display_arr[i + i2] << display_arr[i + i2];
+            if (display_arr[i2][i])
+            {
+                cout << "##";
+            }
+            else
+            {
+                cout << "  ";
+            }
         }
         cout << "\n";
     }
@@ -79,7 +86,8 @@ int main(int argc, char **argv)
     // init important variables
     vector<uint16_t> stack = {};
 
-    bool display[64 * 32] = {};
+    bool display[64][32] = {};
+    bool empty_display[64][32] = {};
 
     uint8_t mem[4096] = {};
     uint16_t PC = 0x200;
@@ -87,8 +95,6 @@ int main(int argc, char **argv)
     uint8_t delay_timer;
     uint8_t sound_timer;
     uint8_t GPVR[16] = {};
-
-    uint8_t nibble_masks[2] = {0xC, 0x3};
 
     // init font and dump it into DMA
     uint8_t font[80] = {
@@ -115,7 +121,6 @@ int main(int argc, char **argv)
 
     // open rom_file and dump at 0x200
     ifstream rom_file;
-    cout << argv[1] << endl;
     rom_file.open(argv[1], ios::binary | ios::ate); // ios::blahblah have constructers built in so the (argv, ios::) could have been slapped after ifstream rom_file
 
     if (!rom_file.is_open())
@@ -145,7 +150,6 @@ int main(int argc, char **argv)
     {
         cpu_nanos_delay /= atoi(argv[2]);
     }
-    cout << cpu_nanos_delay << endl;
 
     /*for (size_t i = 0; i < 4096; i++)
     {
@@ -155,7 +159,9 @@ int main(int argc, char **argv)
     DelayTimer delay_timer_timer;
     DelayTimer cpu_delay_timer;
 
-    uint8_t OP_code_nibbles[4] = {};
+    uint8_t OP_nibble_X;
+    uint8_t OP_nibble_Y;
+
     uint16_t fetched_instr = 0x000;
 
     // main loop
@@ -169,34 +175,70 @@ int main(int argc, char **argv)
         if (cpu_delay_timer.done(0, cpu_nanos_delay))
         {
             //  fetch
-            OP_code_nibbles[0] = 0x1; // mem[PC] & nibble_masks[0];     // instruction type
-            OP_code_nibbles[1] = 0xA; // mem[PC] & nibble_masks[1];     // look up 1/16 GPVR (X)                   ]
-            OP_code_nibbles[2] = 0xB; // mem[PC + 1] & nibble_masks[0]; // look up 1/16 GPVR (Y)]                  ]   12-bit mem adr
-            OP_code_nibbles[3] = 0xC; // mem[PC + 1] & nibble_masks[1]; // 4-bit int (N)        ]  8-bit int (NNN) ]
-            fetched_instr = 256 * mem[PC] + mem[PC + 1];
+            // instruction type
+            // look up 1/16 GPVR (X)                   ]
+            // look up 1/16 GPVR (Y)]                  ]   12-bit mem adr
+            // 4-bit int (N)        ]  8-bit int (NNN) ]
 
-            //  decode and execute
-            switch (OP_code_nibbles[0])
+            fetched_instr = 256U * mem[PC] + mem[PC + 1];
+
+            OP_nibble_X = (fetched_instr & 0x0F00) >> 8;
+            OP_nibble_Y = (fetched_instr & 0x00F0) >> 4;
+
+            //   decode and execute
+            switch ((fetched_instr & 0xF000) >> 12)
             {
             case 0x0:
-                if (OP_code_nibbles[1] == 0x0 && OP_code_nibbles[2] == 0xE && OP_code_nibbles[3] == 0)
+                switch (fetched_instr & 0x0FFF)
                 {
-                    std::fill_n(display, 64 * 32, 0);
+                case 0x0E0: // clear display
+                    memcpy(display, empty_display, 64 * 32);
                     update_display(display);
+                    break;
+                case 0x0EE: // rtrn from sub routine (got there via call inst)
+                    PC = stack.back();
+                    stack.pop_back();
                 }
-
                 break;
-            case 0x1:
-                // 4444
-                memcpy(&tmp_instr, &OP_code_nibbles[1], 1);
-                tmp_instr << 8;
-                cout << tmp_instr << endl;
-
-                memcpy(&tmp_instr, &mem[PC + 1], 1);
-                cout << tmp_instr << endl;
-                exit(0);
-
+            case 0x1: // jump instr
+                PC = fetched_instr & 0x0FFF;
                 PC -= 2;
+                break;
+            case 0x2: // call instr (jmp but returns)
+                stack.push_back(PC);
+                PC = fetched_instr & 0x0FFF;
+                PC -= 2;
+                break;
+            case 0x6:
+                GPVR[OP_nibble_X] = fetched_instr & 0x00FF;
+                break;
+            case 0x7:
+                GPVR[OP_nibble_X] += fetched_instr & 0x00FF;
+                break;
+            case 0xA:
+                I = fetched_instr & 0x0FFF;
+                break;
+            case 0xD: // draw instr
+                GPVR[15] = 0;
+                for (size_t i = 0; i < ((fetched_instr & 0x000F)); i++)
+                {
+                    for (size_t i2 = 0; i2 < 8; i2++)
+                    {
+                        if (((GPVR[OP_nibble_Y] % 31) + i) < 32)
+                        {
+                            if (((GPVR[OP_nibble_X] % 63) + 8 - i2) < 64)
+                            {
+                                display[(GPVR[OP_nibble_X] % 63) + 8 - i2][(GPVR[OP_nibble_Y] % 31) + i] ^= ((mem[I + i] >> i2) & 0x1);
+                                if ((display[(GPVR[OP_nibble_X] % 63) + 8 - i2][(GPVR[OP_nibble_Y] % 31) + i] == 1) && ((mem[I + i] >> i2) & 0x1) == 1)
+                                {
+                                    GPVR[15] = 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                update_display(display);
+
                 break;
             default:
                 break;
@@ -208,10 +250,5 @@ int main(int argc, char **argv)
             }
         }
     }
-    // 00 0
-    // 10 1
-    // 01 1
-    // 11 0
-    //
     return 0;
 }
